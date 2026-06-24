@@ -1,0 +1,71 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch: {} # also allow manual runs from the Actions tab
+
+jobs:
+  build:
+    name: flutter build windows (release)
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          # Pin the same channel/version we use on macOS to keep behaviour
+          # consistent. Bump deliberately when you upgrade locally.
+          flutter-version: "3.29.3"
+          channel: stable
+          cache: true
+
+      - name: Show toolchain info
+        shell: pwsh
+        run: |
+          flutter --version
+          flutter doctor -v
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Build release for Windows
+        # CEF gets downloaded into packages/webview_cef/windows/third/cef by the
+        # plugin's CMakeLists at configure time, so no extra fetch step is
+        # needed. First build is slow (compiling libcef_dll_wrapper).
+        run: flutter build windows --release
+
+      - name: Stage release bundle
+        shell: pwsh
+        run: |
+          $src = "build\windows\x64\runner\Release"
+          $dst = "dist\ZaloToolChatPlus-Windows"
+          if (!(Test-Path $src)) {
+            Write-Error "Build output not found at $src"
+            exit 1
+          }
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Copy-Item -Path "$src\*" -Destination $dst -Recurse -Force
+          Get-ChildItem $dst | Format-Table Name, Length
+
+      - name: Zip artifact
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path dist\ZaloToolChatPlus-Windows\* `
+            -DestinationPath dist\ZaloToolChatPlus-Windows.zip `
+            -Force
+          Get-Item dist\ZaloToolChatPlus-Windows.zip | Format-List Name, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZaloToolChatPlus-Windows
+          path: dist/ZaloToolChatPlus-Windows.zip
+          if-no-files-found: error
+          # Keep ~14 days, enough to grab the build without burning storage.
+          retention-days: 14

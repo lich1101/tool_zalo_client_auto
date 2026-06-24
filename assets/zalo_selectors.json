@@ -1,0 +1,27 @@
+{
+  "displayNameSelectors": [
+    "#main-tab .nav__tabs__zalo",
+    ".nav__tabs__zalo",
+    "[idelement='avatar']",
+    ".profile-name",
+    "[data-testid='profile-name']"
+  ],
+  "avatarSelectors": [
+    "#main-tab .zavatar img",
+    ".nav__tabs__zalo .zavatar img",
+    "[idelement='avatar'] img",
+    ".zavatar img",
+    ".profile-avatar img"
+  ],
+  "loggedOutUrlPatterns": [
+    "/login",
+    "/account/login",
+    "qr",
+    "signin",
+    "id.zalo.me",
+    "zalo.me/pc"
+  ],
+  "loggedInUrlPatterns": [
+    "chat.zalo.me"
+  ]
+}

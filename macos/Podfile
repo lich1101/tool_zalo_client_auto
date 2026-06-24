@@ -1,0 +1,69 @@
+platform :osx, '12.0'
+
+# CocoaPods analytics sends network stats synchronously affecting flutter build latency.
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'ephemeral', 'Flutter-Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure \"flutter pub get\" is executed first"
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Flutter-Generated.xcconfig, then run \"flutter pub get\""
+end
+
+require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+flutter_macos_podfile_setup
+
+target 'Runner' do
+  use_frameworks!
+  use_modular_headers!
+
+  flutter_install_all_macos_pods File.dirname(File.realpath(__FILE__))
+  target 'RunnerTests' do
+    inherit! :search_paths
+  end
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_macos_build_settings(target)
+  end
+  require File.expand_path(
+    'Flutter/ephemeral/.symlinks/plugins/webview_cef/macos/embed_cef_helpers.rb', __dir__)
+  WebviewCEF.install_helper_phase(installer)
+
+  Dir.glob(File.join(__dir__, 'Pods', 'Target Support Files', '**', '*.xcconfig')).each do |xcconfig_path|
+    xcconfig = File.read(xcconfig_path)
+    patched = xcconfig
+      .gsub('-ObjC Embedded Framework -framework "Chromium"',
+            '-ObjC -framework "Chromium Embedded Framework"')
+      .gsub('Embedded Framework -framework "Chromium"',
+            '-framework "Chromium Embedded Framework"')
+    next if patched == xcconfig
+
+    File.write(xcconfig_path, patched)
+  end
+
+  Dir.glob(File.join(__dir__, 'Pods', 'Target Support Files', '**', '*-frameworks.sh')).each do |script_path|
+    script = File.read(script_path)
+    patched = script.sub(
+      "code_sign_if_enabled() {\n",
+      "code_sign_if_enabled() {\n  xattr -cr \"$1\" || true\n"
+    )
+    next if patched == script
+
+    File.write(script_path, patched)
+  end
+end
