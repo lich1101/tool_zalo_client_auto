@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     name: flutter build windows (release)
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 60
 
     steps:
