@@ -38,5 +38,71 @@
     "#btnSendMsg",
     ".btn-send",
     "button[aria-label='Gửi']"
+  ],
+  "searchInput": [
+    "#contact-search-input",
+    "input#contactSearch",
+    "input[placeholder*='Tìm kiếm']",
+    "input[placeholder*='Tìm bạn']",
+    "input[type='search']",
+    ".search-input input"
+  ],
+  "searchClearButton": [
+    "#contact-search-input + .clear-icon",
+    ".search-input__clear",
+    ".icDeleteText"
+  ],
+  "searchResultsContainer": [
+    "#search-result",
+    ".search-result",
+    ".global-search-result",
+    "#global-search-result"
+  ],
+  "searchResultItem": [
+    "#search-result [data-id^='zid-']",
+    ".search-result .search-item",
+    ".global-search-result .contact-item",
+    ".search-list__item",
+    "[data-id^='zid-'].search-item"
+  ],
+  "searchResultName": [
+    ".search-item__name",
+    ".contact-item__name",
+    ".conv-item-summary__name",
+    ".name"
+  ],
+  "searchResultAvatar": [
+    ".search-item__avatar img",
+    ".contact-item__avatar img",
+    ".zavatar img"
+  ],
+  "searchByPhoneResult": [
+    "[data-translate-inner='STR_FINDING_BY_PHONE']",
+    ".search-result__phone .contact-item",
+    ".search-global-result__friend .contact-item",
+    "#global-search-result .contact-item"
+  ],
+  "searchNoResult": [
+    ".search-result__empty",
+    ".no-result",
+    "[data-translate-inner='STR_NO_RESULT']",
+    ".search-empty"
+  ],
+  "findFriendMessageButton": [
+    ".profile-action button[title='Nhắn tin']",
+    "button[title='Nhắn tin']",
+    ".find-friend__action button.send-message",
+    ".profile__action--message"
+  ],
+  "conversationHeaderName": [
+    ".chat-info__name",
+    ".header-title__name",
+    ".chat-header__name",
+    "#header .name"
+  ],
+  "conversationHeaderAvatar": [
+    ".chat-info__avatar img",
+    ".chat-header__avatar img",
+    "#header .zavatar img"
   ]
 }

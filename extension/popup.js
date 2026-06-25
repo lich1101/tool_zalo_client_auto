@@ -1,3 +1,5 @@
+const openAppBtn = document.getElementById("openAppBtn");
+const checkAppBtn = document.getElementById("checkAppBtn");
 const syncBtn = document.getElementById("syncBtn");
 const pollBtn = document.getElementById("pollBtn");
 const optionsLink = document.getElementById("optionsLink");
@@ -10,6 +12,31 @@ function setStatus(message) {
 optionsLink.addEventListener("click", (event) => {
   event.preventDefault();
   chrome.runtime.openOptionsPage();
+});
+
+openAppBtn.addEventListener("click", async () => {
+  setStatus("Đang mở app desktop...");
+  try {
+    const result = await window.CAMPAIO_DESKTOP.openApp();
+    setStatus(result.message);
+  } catch (error) {
+    setStatus(`Lỗi mở app: ${String(error?.message || error)}`);
+  }
+});
+
+checkAppBtn.addEventListener("click", async () => {
+  setStatus("Đang kiểm tra app...");
+  try {
+    const found = await window.CAMPAIO_DESKTOP.detect();
+    if (found.online) {
+      const accounts = found.health?.accounts?.length || 0;
+      setStatus(`App online (cổng ${found.port}) · ${accounts} tài khoản Zalo.`);
+    } else {
+      setStatus("App chưa chạy hoặc chưa cài. Bấm \"Mở app desktop\" để khởi động.");
+    }
+  } catch (error) {
+    setStatus(`Lỗi kiểm tra: ${String(error?.message || error)}`);
+  }
 });
 
 syncBtn.addEventListener("click", async () => {

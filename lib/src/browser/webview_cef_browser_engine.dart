@@ -170,6 +170,12 @@ class WebviewCefBrowserSession implements BrowserSession {
   }
 
   @override
+  Future<void> imeCommitText(String text) async {
+    if (_disposed) return;
+    await _controller.imeCommitText(text);
+  }
+
+  @override
   Future<void> setKeyboardFocus(bool focus) async {
     if (_disposed) return;
     try {

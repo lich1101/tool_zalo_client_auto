@@ -39,6 +39,10 @@ abstract class BrowserSession {
 
   Future<String?> evaluateToString(String script);
 
+  /// Commit text through the embedded browser's native IME path. This is useful
+  /// for sites whose search boxes ignore synthetic DOM input events.
+  Future<void> imeCommitText(String text);
+
   /// Tell the embedded CEF browser to release/acquire keyboard focus. On
   /// macOS, CEF NSViews capture keystrokes via the responder chain and the
   /// AlertDialog overlay can't reclaim them on its own; calling

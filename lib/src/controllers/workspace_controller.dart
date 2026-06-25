@@ -12,8 +12,10 @@ import '../repositories/account_repository.dart';
 import '../repositories/browser_profile_repository.dart';
 import '../repositories/settings_repository.dart';
 import '../services/bridge_injector.dart';
+import '../services/local_bridge_server.dart';
 import '../services/logging_service.dart';
 import '../services/outbox_poller.dart';
+import '../services/task_poller.dart';
 import '../services/zalo_dom_extractor.dart';
 
 class WorkspaceController extends ChangeNotifier {
@@ -42,12 +44,15 @@ class WorkspaceController extends ChangeNotifier {
   final Map<String, Timer> _scheduledInspections = <String, Timer>{};
   final Set<String> _bootingSessions = <String>{};
   final Set<String> _inspectingSessions = <String>{};
+  final Set<String> _backgroundWarmSessions = <String>{};
 
   List<AccountProfile> _accounts = <AccountProfile>[];
   AppSettings _appSettings = const AppSettings();
   ThemeMode _themeMode = ThemeMode.system;
   late final BridgeInjector _bridgeInjector = BridgeInjector(_logger);
   late final OutboxPoller _outboxPoller = OutboxPoller(_logger);
+  late final TaskPoller _taskPoller = TaskPoller(_logger);
+  late final LocalBridgeServer _localBridgeServer = LocalBridgeServer(_logger);
   String? _selectedAccountId;
   BrowserSession? _popupSession;
   String? _popupSessionKey;
@@ -201,6 +206,8 @@ class WorkspaceController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _outboxPoller.stop();
+    _taskPoller.stop();
+    unawaited(_localBridgeServer.stop());
     for (final timer in _scheduledInspections.values) {
       timer.cancel();
     }
@@ -235,6 +242,15 @@ class WorkspaceController extends ChangeNotifier {
     _isInitializing = true;
     _notifySafely();
 
+    // Start the loopback bridge so the extension / Campaio web can detect the
+    // app and ask it to come to front. Independent of bridge settings — health
+    // detection must work even before the user configures the tenant.
+    unawaited(_localBridgeServer.start(
+      healthProvider: _buildHealthSnapshot,
+      onActivate: _activateApp,
+      diagnosticsProvider: _bridgeDiagnostics,
+    ));
+
     try {
       final loadedAccounts = await _accountRepository.getAll();
       // Sort by createdAt (oldest first) so the order is stable across the
@@ -267,7 +283,10 @@ class WorkspaceController extends ChangeNotifier {
           && _appSettings.deviceApiKey.isNotEmpty) {
         for (final account in _accounts) {
           if (_sessions.containsKey(account.id)) continue;
-          unawaited(_ensureSession(account.id));
+          unawaited(_ensureSession(
+            account.id,
+            backgroundWarmup: account.id != _selectedAccountId,
+          ));
         }
       }
 
@@ -373,7 +392,16 @@ class WorkspaceController extends ChangeNotifier {
   Future<void> selectAccount(String accountId) async {
     _selectedAccountId = accountId;
     _notifySafely();
-    await _ensureSession(accountId);
+    final account = _accountById(accountId);
+    final shouldReopen = _backgroundWarmSessions.remove(accountId)
+        || account?.status == AccountStatus.error;
+    await _ensureSession(accountId, reopen: shouldReopen);
+    if (shouldReopen) {
+      _scheduleInspection(
+        accountId,
+        delay: const Duration(seconds: 1),
+      );
+    }
   }
 
   Future<void> setThemeMode(ThemeMode mode) async {
@@ -441,7 +469,10 @@ class WorkspaceController extends ChangeNotifier {
     if (_appSettings.bridgeEnabled) {
       for (final account in _accounts) {
         if (_sessions.containsKey(account.id)) continue;
-        unawaited(_ensureSession(account.id));
+        unawaited(_ensureSession(
+          account.id,
+          backgroundWarmup: account.id != _selectedAccountId,
+        ));
       }
     }
   }
@@ -497,11 +528,13 @@ class WorkspaceController extends ChangeNotifier {
         || _appSettings.tenantUrl.isEmpty
         || _appSettings.deviceApiKey.isEmpty) {
       _outboxPoller.stop();
+      _taskPoller.stop();
       return;
     }
+    final profileIds = _accounts.map((a) => a.id).toList();
     _outboxPoller.start(
       settings: _appSettings,
-      profileIds: _accounts.map((a) => a.id).toList(),
+      profileIds: profileIds,
       resolveSession: (profileId) => _sessions[profileId],
       // Piggyback the account roster push on the same poll loop so the
       // tenant /channels page reflects login changes without the user
@@ -512,6 +545,156 @@ class WorkspaceController extends ChangeNotifier {
         accounts: List<AccountProfile>.from(_accounts),
       ),
     );
+    // Phone-driven lookup/history/send queue runs on the same lifecycle.
+    _taskPoller.start(
+      settings: _appSettings,
+      profileIds: profileIds,
+      resolveSession: (profileId) => _sessions[profileId],
+      prepareSession: _prepareTaskSession,
+    );
+  }
+
+  /// Health snapshot exposed on the loopback bridge so the extension / Campaio
+  /// web can show which Zalo accounts this machine has and their login state.
+  Map<String, Object?> _buildHealthSnapshot() {
+    return <String, Object?>{
+      'bridgeEnabled': _appSettings.bridgeEnabled,
+      'tenantConfigured': _appSettings.tenantUrl.isNotEmpty && _appSettings.deviceApiKey.isNotEmpty,
+      'accounts': _accounts
+          .map((a) => <String, Object?>{
+                'profileId': a.id,
+                'displayName': a.displayName ?? a.accountName,
+                'status': a.status.name,
+              })
+          .toList(),
+    };
+  }
+
+  /// Per-session bridge diagnostics, exposed on the loopback /debug endpoint so
+  /// we can see (without devtools) which session has chat.zalo.me + the injected
+  /// bridge. Temporary diagnostic aid for the phone-lookup flow.
+  Future<List<Map<String, Object?>>> _bridgeDiagnostics() async {
+    const probe = '''
+JSON.stringify({
+  url: location.href,
+  hasConfig: !!window.__CAMPAIO__,
+  hasBridge: !!window.__CAMPAIO_BRIDGE__,
+  hasRunTaskAsync: !!(window.__CAMPAIO_BRIDGE__ && window.__CAMPAIO_BRIDGE__.runTaskAsync),
+  module: window.__CAMPAIO_BRIDGE__ ? window.__CAMPAIO_BRIDGE__.activeModule : null,
+  injectProbe: window.__CAMPAIO_INJECT_PROBE__ || 0,
+  scriptLength: window.__CAMPAIO_BRIDGE_SCRIPT_LEN__ || null,
+  injectResult: window.__CAMPAIO_BRIDGE_LAST_RESULT__ || null,
+  lastLookupDebug: window.__CAMPAIO_LAST_LOOKUP_DEBUG__ || null,
+  bridgeError: window.__CAMPAIO_BRIDGE_ERROR__ || null
+})''';
+    final out = <Map<String, Object?>>[];
+    for (final entry in _sessions.entries) {
+      final account = _accountById(entry.key);
+      Object? parsed;
+      try {
+        final raw = await entry.value.evaluateToString(probe);
+        parsed = raw;
+      } catch (error) {
+        parsed = 'eval error: $error';
+      }
+      out.add(<String, Object?>{
+        'profileId': entry.key,
+        'name': account?.displayName ?? account?.accountName,
+        'status': account?.status.name,
+        'probe': parsed,
+      });
+    }
+    return out;
+  }
+
+  /// Best-effort focus when the web/extension presses "Mở app". Without a
+  /// window-management plugin we can't reliably raise the window from pure
+  /// Dart, so this currently just selects an account + logs; the OS custom URL
+  /// scheme (campaio-zalo://) is the primary wake/foreground path.
+  Future<void> _activateApp() async {
+    _logger.info('[WorkspaceController] activate requested via local bridge.');
+    if (_selectedAccountId == null && _accounts.isNotEmpty) {
+      await selectAccount(_accounts.first.id);
+    }
+  }
+
+  Future<BrowserSession?> _prepareTaskSession(String profileId) async {
+    final normalizedProfileId = profileId.trim();
+    if (normalizedProfileId.isEmpty) {
+      return null;
+    }
+
+    final session = await _ensureSession(normalizedProfileId);
+    if (session == null) {
+      return null;
+    }
+
+    if (!session.currentUrl.contains('chat.zalo.me')) {
+      await session.loadUrl(AppConfig.zaloAccountUrl);
+      await _waitForSessionUrl(
+        session,
+        (url) => url.contains('chat.zalo.me') || url.contains('id.zalo.me'),
+        timeout: const Duration(seconds: 12),
+      );
+    }
+
+    await _bridgeInjector.maybeInject(
+      session: session,
+      url: session.currentUrl.isEmpty ? AppConfig.zaloAccountUrl : session.currentUrl,
+      settings: _appSettings,
+      profileId: normalizedProfileId,
+    );
+
+    final ready = await _waitForBridgeReady(session);
+    if (!ready && session.currentUrl.contains('chat.zalo.me')) {
+      // Some Zalo SPA transitions do not fire a full load event. Re-inject once
+      // after the DOM settles so background lookup tasks do not fail on a cold
+      // session.
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      await _bridgeInjector.maybeInject(
+        session: session,
+        url: session.currentUrl,
+        settings: _appSettings,
+        profileId: normalizedProfileId,
+      );
+      await _waitForBridgeReady(session);
+    }
+
+    return session;
+  }
+
+  Future<void> _waitForSessionUrl(
+    BrowserSession session,
+    bool Function(String url) predicate, {
+    required Duration timeout,
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      if (predicate(session.currentUrl)) {
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+  }
+
+  Future<bool> _waitForBridgeReady(BrowserSession session) async {
+    const probe = '''
+(function(){
+  return !!(window.__CAMPAIO_BRIDGE__ && window.__CAMPAIO_BRIDGE__.runTaskAsync);
+})();
+''';
+    for (var i = 0; i < 20; i += 1) {
+      try {
+        final raw = (await session.evaluateToString(probe))?.trim();
+        if (raw == 'true' || raw == '"true"') {
+          return true;
+        }
+      } catch (_) {
+        // Best-effort probe; the caller will retry if the page is still moving.
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    return false;
   }
 
   /// Push the current account list to the tenant if the bridge is configured.
@@ -630,6 +813,7 @@ class WorkspaceController extends ChangeNotifier {
     _scheduledInspections.remove(accountId)?.cancel();
     _bootingSessions.remove(accountId);
     _inspectingSessions.remove(accountId);
+    _backgroundWarmSessions.remove(accountId);
 
     await _browserEngine.disposeSession(accountId);
     _sessions.remove(accountId);
@@ -638,6 +822,7 @@ class WorkspaceController extends ChangeNotifier {
   Future<BrowserSession?> _ensureSession(
     String accountId, {
     bool reopen = false,
+    bool backgroundWarmup = false,
   }) async {
     if (_disposed) {
       return null;
@@ -667,6 +852,11 @@ class WorkspaceController extends ChangeNotifier {
         initialUrl: AppConfig.zaloAccountUrl,
       );
       _sessions[accountId] = session;
+      if (backgroundWarmup) {
+        _backgroundWarmSessions.add(accountId);
+      } else {
+        _backgroundWarmSessions.remove(accountId);
+      }
       await _attachSessionCallback(accountId, session);
       return session;
     } catch (error, stackTrace) {

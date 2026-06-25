@@ -309,9 +309,12 @@ class OutboxPoller {
     final client = HttpClient();
     try {
       final req = await client.postUrl(Uri.parse(url));
+      final bytes = utf8.encode(jsonEncode(body));
       req.headers.set('X-Zalo-Personal-Device-Key', _settings.deviceApiKey);
-      req.headers.set('Content-Type', 'application/json');
-      req.write(jsonEncode(body));
+      req.headers.set('Content-Type', 'application/json; charset=utf-8');
+      req.headers.set('Accept', 'application/json');
+      req.headers.set('Content-Length', bytes.length.toString());
+      req.add(bytes);
       final res = await req.close();
       final responseBody = await res.transform(utf8.decoder).join();
       if (res.statusCode >= 200 && res.statusCode < 300) {
