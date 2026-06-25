@@ -75,6 +75,9 @@ function setNativeValue(input, value) {
   const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
   if (setter) setter.call(input, value);
   else input.value = value;
+  // React caches the last value in _valueTracker; reset it so dispatching
+  // "input" actually fires onChange and the SPA search runs.
+  if (input._valueTracker) input._valueTracker.setValue(" ");
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
@@ -84,8 +87,18 @@ function currentHashUid() {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-function activeConversationInfo() {
-  const zaloId = currentHashUid();
+function phoneExternalId(phone) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  return digits ? `phone:${digits}` : null;
+}
+
+function recipientPhone(recipient) {
+  const value = String(recipient || "").trim();
+  return value.startsWith("phone:") ? value.slice(6) : null;
+}
+
+function activeConversationInfo(fallbackId = null) {
+  const zaloId = currentHashUid() || fallbackId;
   if (!zaloId) return null;
   const nameNode = SELECTORS.conversationHeaderName.map((s) => document.querySelector(s)).find(Boolean);
   const avatarNode = SELECTORS.conversationHeaderAvatar.map((s) => document.querySelector(s)).find(Boolean);
@@ -130,35 +143,23 @@ function findSearchInput() {
 async function fillSearchInput(input, value) {
   input.focus();
   if (typeof input.select === "function") input.select();
+  // setNativeValue resets React's _valueTracker so the "input" event triggers
+  // the SPA phone search reliably — char-by-char typing was intermittent.
   setNativeValue(input, "");
-  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", code: "Backspace", bubbles: true }));
-  input.dispatchEvent(new KeyboardEvent("keyup", { key: "Backspace", code: "Backspace", bubbles: true }));
-  await wait(120);
+  await wait(80);
+  setNativeValue(input, String(value));
+  triggerPhoneSearchEvents(input);
+}
 
-  for (const char of String(value)) {
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: char, bubbles: true }));
-    const before = String(input.value || "");
-    let inserted = false;
-    try {
-      inserted = document.execCommand && document.execCommand("insertText", false, char);
-    } catch {
-      inserted = false;
-    }
-    if (!inserted || String(input.value || "") === before) {
-      setNativeValue(input, `${before}${char}`);
-    } else {
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    input.dispatchEvent(new KeyboardEvent("keyup", { key: char, bubbles: true }));
-    await wait(35);
-  }
-
-  const typedDigits = String(input.value || "").replace(/\D/g, "");
-  const expectedDigits = String(value || "").replace(/\D/g, "");
-  if (!typedDigits.includes(expectedDigits)) {
-    setNativeValue(input, String(value));
-  }
+function triggerPhoneSearchEvents(input) {
+  if (!input) return;
+  input.focus();
+  try { input.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, data: input.value || "", inputType: "insertText" })); } catch { /* ignore */ }
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  input.dispatchEvent(new KeyboardEvent("keyup", { key: String(input.value || "").slice(-1) || "0", bubbles: true }));
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+  input.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true }));
 }
 
 function preparePhoneSearch(phone) {
@@ -275,6 +276,44 @@ function extractCardInfo(card, phone) {
   return { name, avatarUrl, zaloId };
 }
 
+// Deterministic find-by-phone extractor: anchor on the "Số điện thoại: <phone>"
+// line Zalo renders; the display name is the line directly above it, the avatar
+// the nearest enclosing img. Mirrors integration_bridge.js.
+function extractPhoneResult(phone) {
+  const digits = String(phone).replace(/\D/g, "");
+  if (!digits) return null;
+  let phoneNode = null;
+  let bestDesc = Infinity;
+  for (const n of document.querySelectorAll("span, div, p")) {
+    const t = n.textContent || "";
+    if (!/số điện thoại/i.test(t)) continue;
+    if (t.replace(/\D/g, "").indexOf(digits) === -1) continue;
+    if (t.length > 80) continue;
+    const d = n.querySelectorAll("*").length;
+    if (d < bestDesc) { bestDesc = d; phoneNode = n; if (d === 0) break; }
+  }
+  if (!phoneNode) return null;
+  let name = null;
+  const lines = (document.body.innerText || "").split("\n").map((s) => s.trim());
+  for (let i = 1; i < lines.length; i += 1) {
+    if (/số điện thoại/i.test(lines[i]) && lines[i].replace(/\D/g, "").indexOf(digits) !== -1) {
+      const prev = lines[i - 1];
+      if (prev && prev.length <= 60
+          && !/^(tìm bạn|nhắn tin|kết bạn|số điện thoại|sử dụng|người lạ|không có nhóm)/i.test(prev)
+          && prev.replace(/\D/g, "").indexOf(digits) === -1) {
+        name = prev;
+      }
+      break;
+    }
+  }
+  let card = phoneNode;
+  for (let i = 0; i < 8 && card.parentElement; i += 1) {
+    card = card.parentElement;
+    if (card.querySelector?.("img")) break;
+  }
+  return { card: clickableContainer(card), name, avatarUrl: card.querySelector?.("img")?.src || null };
+}
+
 // Find a Zalo user by phone number. Strategy:
 //   1. Type the phone into the global search box.
 //   2. Wait for a result row (existing conv or "tìm bạn qua SĐT" card) and click
@@ -298,6 +337,7 @@ async function searchByPhone(phone, opts = {}) {
     input.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true }));
   } else {
     input.focus();
+    triggerPhoneSearchEvents(input);
     rememberLookupDebug("waiting_native_search", normalized);
   }
 
@@ -306,6 +346,8 @@ async function searchByPhone(phone, opts = {}) {
   // exact class names.
   const startedAt = Date.now();
   const found = await waitFor(() => {
+    const byLabel = extractPhoneResult(normalized);
+    if (byLabel?.card) return { card: byLabel.card, byLabel };
     const card = findPhoneCard(normalized);
     if (card) return { card };
     const uid = currentHashUid();
@@ -322,6 +364,10 @@ async function searchByPhone(phone, opts = {}) {
   let info = { name: null, avatarUrl: null, zaloId: null };
   if (found.card) {
     info = extractCardInfo(found.card, normalized);
+    if (found.byLabel) {
+      info.name = found.byLabel.name || info.name;
+      info.avatarUrl = found.byLabel.avatarUrl || info.avatarUrl;
+    }
     rememberLookupDebug("card_found", normalized, { hasName: !!info.name, hasZaloId: !!info.zaloId });
   }
 
@@ -329,21 +375,23 @@ async function searchByPhone(phone, opts = {}) {
     const btn = SELECTORS.findFriendMessageButton.map((s) => found.card.querySelector?.(s)).find(Boolean);
     try { (btn || found.card).click(); } catch { /* ignore */ }
   }
+  const fallbackId = info.zaloId || phoneExternalId(normalized);
   const uid = await waitFor(() => {
     const currentUid = currentHashUid();
-    if (!currentUid || !$("composeBox")) return null;
+    if (!$("composeBox")) return null;
+    if (!currentUid) return fallbackId;
     if (currentUid !== initialUid) return currentUid;
     if (info.zaloId && info.zaloId === currentUid) return currentUid;
     return null;
   }, { timeout: 8000, interval: 300 });
   if (uid) {
-    const conv = activeConversationInfo();
+    const conv = activeConversationInfo(uid);
     rememberLookupDebug("chat_opened", normalized, { uidChanged: uid !== initialUid });
     return { found: true, zaloId: uid, name: conv?.name || info.name, avatarUrl: conv?.avatarUrl || info.avatarUrl };
   }
   // Found in search but couldn't open a chat (stranger profile modal etc.).
   rememberLookupDebug("card_without_chat", normalized, { hasName: !!info.name, hasZaloId: !!info.zaloId });
-  return { found: true, zaloId: info.zaloId, name: info.name, avatarUrl: info.avatarUrl };
+  return { found: true, zaloId: info.zaloId || phoneExternalId(normalized), name: info.name, avatarUrl: info.avatarUrl };
 }
 
 // Open the conversation for a phone (search → open) and return identity.
@@ -358,14 +406,21 @@ async function openByPhone(phone, opts = {}) {
 async function fetchHistory({ phone, recipientZaloId, limit = 80, preparedSearch = false } = {}) {
   let zaloId = recipientZaloId || null;
   if (zaloId) {
-    await openConversation(zaloId);
+    const phoneFromRecipient = recipientPhone(zaloId);
+    if (phoneFromRecipient) {
+      const opened = await openByPhone(phoneFromRecipient, { preparedSearch });
+      zaloId = opened.zaloId || zaloId;
+    } else {
+      await openConversation(zaloId);
+    }
   } else if (phone) {
     const opened = await openByPhone(phone, { preparedSearch });
     zaloId = opened.zaloId;
   }
-  zaloId = zaloId || currentHashUid();
+  zaloId = currentHashUid() || zaloId || phoneExternalId(phone);
   if (!zaloId) throw new Error("No conversation open to read history");
   // Wait until at least one message row renders before scraping.
+  window.__CAMPAIO_ACTIVE_FALLBACK_ID__ = zaloId;
   await waitFor(() => $$("messageRow").length > 0, { timeout: 5000 });
   const messages = scrapeActiveConversationMessages().slice(-limit);
   return { zaloId, messages };
@@ -377,13 +432,19 @@ async function sendByPhone({ phone, recipientZaloId, content, preparedSearch = f
   if (!content) throw new Error("content is empty");
   let zaloId = recipientZaloId || null;
   if (zaloId) {
-    await openConversation(zaloId);
+    const phoneFromRecipient = recipientPhone(zaloId);
+    if (phoneFromRecipient) {
+      const opened = await openByPhone(phoneFromRecipient, { preparedSearch });
+      zaloId = opened.zaloId || zaloId;
+    } else {
+      await openConversation(zaloId);
+    }
   } else {
     const opened = await openByPhone(phone, { preparedSearch });
     zaloId = opened.zaloId;
   }
   await injectMessage(content);
-  return { ok: true, zaloId: zaloId || currentHashUid() };
+  return { ok: true, zaloId: currentHashUid() || zaloId || phoneExternalId(phone) };
 }
 
 // Dispatch a backend task to the right automation. Mirrors the inline CEF
@@ -431,8 +492,8 @@ function scrapeContacts() {
 
 function scrapeActiveConversationMessages() {
   const match = location.hash.match(/uid=([^&]+)/);
-  if (!match) return [];
-  const externalId = decodeURIComponent(match[1]);
+  const externalId = match ? decodeURIComponent(match[1]) : (window.__CAMPAIO_ACTIVE_FALLBACK_ID__ || null);
+  if (!externalId) return [];
   const rows = $$( "messageRow");
   const messages = [];
   for (const row of rows.slice(-80)) {
@@ -453,6 +514,11 @@ function scrapeActiveConversationMessages() {
 }
 
 async function openConversation(externalId) {
+  const phone = recipientPhone(externalId);
+  if (phone) {
+    await openByPhone(phone);
+    return;
+  }
   if (location.hash.includes(`uid=${externalId}`)) return;
   location.hash = `#chat/${externalId}`;
   for (let i = 0; i < 30; i += 1) {
@@ -473,10 +539,25 @@ async function injectMessage(content) {
     box.textContent = content;
     box.dispatchEvent(new InputEvent("input", { bubbles: true, data: content, inputType: "insertText" }));
   }
-  await wait(120);
-  const btn = $( "sendButton");
-  if (btn) btn.click();
-  else box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await wait(200);
+  // Zalo's send control is an unlabelled primary icon button in the compose
+  // row. Try configured selectors, then scope to the compose row, then Enter.
+  let btn = $( "sendButton");
+  if (!btn) {
+    let row = box;
+    for (let i = 0; i < 6 && row.parentElement; i += 1) {
+      row = row.parentElement;
+      const cand = row.querySelector(".z--btn--v2.btn-tertiary-primary, .btn-tertiary-primary");
+      if (cand) { btn = cand; break; }
+    }
+  }
+  if (btn) {
+    btn.click();
+  } else {
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+    box.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+  }
+  await wait(300);
 }
 
 export const zaloPersonalModule = {

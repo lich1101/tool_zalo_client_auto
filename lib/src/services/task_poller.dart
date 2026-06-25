@@ -260,44 +260,12 @@ class TaskPoller {
   }
 
   Future<bool> _prepareNativePhoneSearch(BrowserSession session, Map<String, dynamic> task) async {
-    final taskType = task['taskType']?.toString();
-    final phone = task['phone']?.toString().trim() ?? '';
-    final hasKnownRecipient = (task['recipientZaloId']?.toString().trim() ?? '').isNotEmpty;
-    if (phone.isEmpty || hasKnownRecipient) return false;
-    if (taskType != 'lookup_by_phone' && taskType != 'fetch_history' && taskType != 'send_message') {
-      return false;
-    }
-
-    final phoneJson = jsonEncode(phone);
-    final prepareJs = '''
-(function(){
-  try {
-    var b = window.__CAMPAIO_BRIDGE__;
-    if (!b || typeof b.preparePhoneSearch !== 'function') return 'NO_PREPARE';
-    var r = b.preparePhoneSearch($phoneJson);
-    return r && r.ok ? 'OK' : 'NOT_OK';
-  } catch (e) { return 'ERR:' + (e && e.message || e); }
-})();
-''';
-    final prepareRaw = await session.evaluateToString(prepareJs);
-    final raw = (prepareRaw ?? '').trim().replaceAll('"', '');
-    if (raw != 'OK') {
-      _logger.warning('[TaskPoller] native phone search prepare skipped: $raw');
-      return false;
-    }
-
-    try {
-      await session.setKeyboardFocus(true);
-      await Future<void>.delayed(const Duration(milliseconds: 120));
-      await session.imeCommitText(phone);
-      await Future<void>.delayed(const Duration(milliseconds: 900));
-      final taskId = task['id']?.toString() ?? '<unknown>';
-      _logger.info('[TaskPoller] native phone search prepared for task $taskId.');
-      return true;
-    } catch (error) {
-      _logger.warning('[TaskPoller] native phone search input failed: $error');
-      return false;
-    }
+    // Do not use CEF IME commit for Zalo global search. It can put digits into
+    // the visible input while Zalo's SPA state does not start a search, leaving
+    // the bridge stuck with "input has digits but no results". Let the injected
+    // bridge do the full fill + synthetic event sequence inside the page
+    // context instead; that path also works for hidden/background sessions.
+    return false;
   }
 
   bool _isTransientBridgeError(String value) {
@@ -307,6 +275,8 @@ class TaskPoller {
         || text.contains('no session')
         || text.contains('webview')
         || text.contains('browser')
+        || text.contains('search box not found')
+        || text.contains('(timeout)')
         || text.contains('task timed out waiting for bridge result');
   }
 

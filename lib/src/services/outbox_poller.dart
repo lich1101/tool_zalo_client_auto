@@ -224,16 +224,11 @@ class OutboxPoller {
     if (!bridge || !bridge.activeModule) {
       return JSON.stringify({ ok: false, error: 'bridge not bootstrapped on this page' });
     }
-    // The injected bridge exposes runSync + pollOutbox but not raw module —
-    // walk via the SAME path: dispatchEvent open + injectMessage. Since the
-    // module is closed-over, we re-derive via window.__CAMPAIO_BRIDGE__'s
-    // hidden activeModule. As a fallback when the bridge object doesn't
-    // expose the module, we use location.hash directly.
-    if (typeof bridge.openConversation === 'function' && typeof bridge.injectMessage === 'function') {
-      await bridge.openConversation(recipient);
-      await bridge.injectMessage(content);
+    if (typeof bridge.sendByPhone === 'function') {
+      await bridge.sendByPhone({ recipientZaloId: recipient, content });
       return JSON.stringify({ ok: true });
     }
+    // Legacy fallback for old injected bridges that only know uid-based sends.
     // Fallback: best-effort DOM walk.
     if (!location.hash.includes('uid=' + recipient)) {
       location.hash = '#chat/' + recipient;

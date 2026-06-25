@@ -27,6 +27,8 @@ import 'logging_service.dart';
 typedef HealthSnapshotProvider = Map<String, Object?> Function();
 typedef ActivateHandler = FutureOr<void> Function();
 typedef DiagnosticsProvider = Future<List<Map<String, Object?>>> Function();
+// Debug-only: evaluate JS in a given profile's session and return the result.
+typedef EvalHandler = Future<String?> Function(String profileId, String script);
 
 class LocalBridgeServer {
   LocalBridgeServer(this._logger);
@@ -36,6 +38,7 @@ class LocalBridgeServer {
   HealthSnapshotProvider? _healthProvider;
   ActivateHandler? _onActivate;
   DiagnosticsProvider? _diagnosticsProvider;
+  EvalHandler? _evalHandler;
 
   /// Candidate loopback ports, probed in order. Keep this in sync with the
   /// extension/web probe list (campaio-bridge-extension + frontend).
@@ -50,10 +53,12 @@ class LocalBridgeServer {
     HealthSnapshotProvider? healthProvider,
     ActivateHandler? onActivate,
     DiagnosticsProvider? diagnosticsProvider,
+    EvalHandler? evalHandler,
   }) async {
     _healthProvider = healthProvider;
     _onActivate = onActivate;
     _diagnosticsProvider = diagnosticsProvider;
+    _evalHandler = evalHandler;
     if (_server != null) return;
 
     for (final candidate in candidatePorts) {
@@ -141,6 +146,23 @@ class LocalBridgeServer {
         'ok': true,
         'diagnostics': diagnostics,
       });
+      return;
+    }
+
+    if (path == '/eval' && request.method == 'POST') {
+      // Debug aid: run JS in a session and return the result. Localhost-only.
+      if (_evalHandler == null) {
+        await _writeJson(response, 404, <String, Object?>{'ok': false, 'error': 'eval disabled'});
+        return;
+      }
+      final profileId = request.uri.queryParameters['profileId'] ?? '';
+      final script = await utf8.decoder.bind(request).join();
+      try {
+        final result = await _evalHandler!(profileId, script);
+        await _writeJson(response, 200, <String, Object?>{'ok': true, 'result': result});
+      } catch (error) {
+        await _writeJson(response, 200, <String, Object?>{'ok': false, 'error': '$error'});
+      }
       return;
     }
 

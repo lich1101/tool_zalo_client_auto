@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
@@ -249,6 +250,9 @@ class WorkspaceController extends ChangeNotifier {
       healthProvider: _buildHealthSnapshot,
       onActivate: _activateApp,
       diagnosticsProvider: _bridgeDiagnostics,
+      // Arbitrary JS eval is a debugging aid only — never expose it in release
+      // builds (it would let any local process drive the logged-in sessions).
+      evalHandler: kDebugMode ? _evalInSession : null,
     ));
 
     try {
@@ -588,6 +592,11 @@ JSON.stringify({
   bridgeError: window.__CAMPAIO_BRIDGE_ERROR__ || null
 })''';
     final out = <Map<String, Object?>>[];
+    out.add(<String, Object?>{
+      'selectedAccountId': _selectedAccountId,
+      'selectedName': selectedAccount?.displayName ?? selectedAccount?.accountName,
+      'selectedStatus': selectedAccount?.status.name,
+    });
     for (final entry in _sessions.entries) {
       final account = _accountById(entry.key);
       Object? parsed;
@@ -618,10 +627,26 @@ JSON.stringify({
     }
   }
 
+  /// Debug-only: evaluate [script] in [profileId]'s session (or the selected
+  /// session when profileId is empty) and return the stringified result. Backs
+  /// the loopback /eval endpoint used to iterate on the Zalo Web DOM.
+  Future<String?> _evalInSession(String profileId, String script) async {
+    final id = profileId.trim().isEmpty ? _selectedAccountId : profileId.trim();
+    final session = id == null ? null : _sessions[id];
+    if (session == null) return 'NO_SESSION(${id ?? '<none>'})';
+    return session.evaluateToString(script);
+  }
+
   Future<BrowserSession?> _prepareTaskSession(String profileId) async {
     final normalizedProfileId = profileId.trim();
     if (normalizedProfileId.isEmpty) {
       return null;
+    }
+
+    if (_selectedAccountId != normalizedProfileId) {
+      _logger.info('[WorkspaceController] task selecting profile $normalizedProfileId from ${_selectedAccountId ?? '<none>'}.');
+      await selectAccount(normalizedProfileId);
+      await Future<void>.delayed(const Duration(milliseconds: 500));
     }
 
     final session = await _ensureSession(normalizedProfileId);

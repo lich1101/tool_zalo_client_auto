@@ -37,7 +37,8 @@
   "sendButton": [
     "#btnSendMsg",
     ".btn-send",
-    "button[aria-label='Gửi']"
+    "button[aria-label='Gửi']",
+    ".chat-input .z--btn--v2.btn-tertiary-primary"
   ],
   "searchInput": [
     "#contact-search-input",
