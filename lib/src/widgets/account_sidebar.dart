@@ -25,6 +25,7 @@ class AccountSidebar extends StatelessWidget {
     required this.onToggleTheme,
     required this.onSelectAccount,
     required this.onMenuAction,
+    this.onOpenIntegrationSettings,
     super.key,
   });
 
@@ -36,6 +37,7 @@ class AccountSidebar extends StatelessWidget {
   final VoidCallback onToggleTheme;
   final ValueChanged<String> onSelectAccount;
   final Future<void> Function(AccountProfile, AccountMenuAction) onMenuAction;
+  final VoidCallback? onOpenIntegrationSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -64,6 +66,14 @@ class AccountSidebar extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
+                if (onOpenIntegrationSettings != null)
+                  IconButton(
+                    tooltip: 'Kết nối Campaio',
+                    iconSize: 18,
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onOpenIntegrationSettings,
+                    icon: const Icon(Icons.link_rounded),
+                  ),
                 IconButton(
                   tooltip: themeMode == ThemeMode.dark
                       ? 'Chuyển sang light mode'

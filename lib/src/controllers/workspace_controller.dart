@@ -11,7 +11,9 @@ import '../models/app_settings.dart';
 import '../repositories/account_repository.dart';
 import '../repositories/browser_profile_repository.dart';
 import '../repositories/settings_repository.dart';
+import '../services/bridge_injector.dart';
 import '../services/logging_service.dart';
+import '../services/outbox_poller.dart';
 import '../services/zalo_dom_extractor.dart';
 
 class WorkspaceController extends ChangeNotifier {
@@ -42,7 +44,10 @@ class WorkspaceController extends ChangeNotifier {
   final Set<String> _inspectingSessions = <String>{};
 
   List<AccountProfile> _accounts = <AccountProfile>[];
+  AppSettings _appSettings = const AppSettings();
   ThemeMode _themeMode = ThemeMode.system;
+  late final BridgeInjector _bridgeInjector = BridgeInjector(_logger);
+  late final OutboxPoller _outboxPoller = OutboxPoller(_logger);
   String? _selectedAccountId;
   BrowserSession? _popupSession;
   String? _popupSessionKey;
@@ -116,6 +121,8 @@ class WorkspaceController extends ChangeNotifier {
       _selectedAccountId = accountId;
       await _accountRepository.put(profile);
       _notifySafely();
+      _maybePushAccountList();
+    _refreshOutboxPoller();
 
       await _ensureSession(accountId);
     } catch (error, stackTrace) {
@@ -193,6 +200,7 @@ class WorkspaceController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _outboxPoller.stop();
     for (final timer in _scheduledInspections.values) {
       timer.cancel();
     }
@@ -234,7 +242,8 @@ class WorkspaceController extends ChangeNotifier {
       // every time a status check runs, which the user perceives as flicker.
       _accounts = List<AccountProfile>.from(loadedAccounts)
         ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
-      _themeMode = (await _settingsRepository.load()).themeMode;
+      _appSettings = await _settingsRepository.load();
+      _themeMode = _appSettings.themeMode;
 
       if (_accounts.isNotEmpty) {
         _selectedAccountId = _accounts.first.id;
@@ -246,6 +255,27 @@ class WorkspaceController extends ChangeNotifier {
       if (_selectedAccountId != null) {
         await _ensureSession(_selectedAccountId!);
       }
+
+      // When the bridge is enabled, also boot a session for every account so
+      // the Campaio Bridge JS can scrape inbound messages from every Zalo
+      // account — not just the one the user happens to be viewing. Without
+      // this, a customer messaging account B while the user is looking at
+      // account A would be invisible to the tenant. CEF can handle many
+      // sessions; the user can stop the app to free resources.
+      if (_appSettings.bridgeEnabled
+          && _appSettings.tenantUrl.isNotEmpty
+          && _appSettings.deviceApiKey.isNotEmpty) {
+        for (final account in _accounts) {
+          if (_sessions.containsKey(account.id)) continue;
+          unawaited(_ensureSession(account.id));
+        }
+      }
+
+      // If bridge was previously enabled, push the current account list so
+      // the tenant /channels page reflects the device state even before
+      // chat.zalo.me opens.
+      _maybePushAccountList();
+      _refreshOutboxPoller();
     } catch (error, stackTrace) {
       _reportError(
         'Không thể khởi tạo dữ liệu ứng dụng.',
@@ -348,8 +378,72 @@ class WorkspaceController extends ChangeNotifier {
 
   Future<void> setThemeMode(ThemeMode mode) async {
     _themeMode = mode;
+    _appSettings = _appSettings.copyWith(themeMode: mode);
     _notifySafely();
-    await _settingsRepository.save(AppSettings(themeMode: mode));
+    await _settingsRepository.save(_appSettings);
+  }
+
+  AppSettings get appSettings => _appSettings;
+
+  /// Release / restore keyboard focus on every open CEF browser session. On
+  /// macOS the embedded CEF NSView captures keystrokes via the responder
+  /// chain and an overlaying Flutter AlertDialog can't reclaim them. Call
+  /// setBrowsersKeyboardFocus(false) right before showing a dialog and
+  /// setBrowsersKeyboardFocus(true) right after it closes so the TextFields
+  /// inside the dialog actually receive typing.
+  Future<void> setBrowsersKeyboardFocus(bool focus) async {
+    for (final session in _sessions.values) {
+      try {
+        await session.setKeyboardFocus(focus);
+      } catch (_) {
+        // Best-effort: a single session failing should not block the dialog.
+      }
+    }
+  }
+
+  /// Replace the integration credentials block (tenant URL, API key, bridge
+  /// on/off). Re-injects the bridge into any active chat.zalo.me sessions so
+  /// the new key takes effect immediately.
+  Future<void> updateIntegrationSettings({
+    String? tenantUrl,
+    String? deviceApiKey,
+    bool? bridgeEnabled,
+  }) async {
+    _appSettings = _appSettings.copyWith(
+      tenantUrl: tenantUrl,
+      deviceApiKey: deviceApiKey,
+      bridgeEnabled: bridgeEnabled,
+    );
+    _notifySafely();
+    await _settingsRepository.save(_appSettings);
+    // Re-inject the bridge for every currently open session.
+    for (final entry in _sessions.entries) {
+      final url = entry.value.currentUrl;
+      if (url.isEmpty) continue;
+      await _bridgeInjector.maybeInject(
+        session: entry.value,
+        url: url,
+        settings: _appSettings,
+        profileId: entry.key,
+      );
+    }
+    // Push account list so the /channels page can render the Zalo cá nhân
+    // asset picker immediately, without waiting for chat.zalo.me to open.
+    await _bridgeInjector.pushAccountList(
+      settings: _appSettings,
+      accounts: List<AccountProfile>.from(_accounts),
+    );
+    _refreshOutboxPoller();
+
+    // If the user just enabled the bridge, boot sessions for every account
+    // so background scrape covers all of them. If they just disabled it,
+    // sessions stay open but the bridge no longer injects on load.
+    if (_appSettings.bridgeEnabled) {
+      for (final account in _accounts) {
+        if (_sessions.containsKey(account.id)) continue;
+        unawaited(_ensureSession(account.id));
+      }
+    }
   }
 
   Future<void> toggleThemeMode() async {
@@ -380,6 +474,8 @@ class WorkspaceController extends ChangeNotifier {
         _selectedAccountId = _accounts.isEmpty ? null : _accounts.first.id;
       }
       _notifySafely();
+      _maybePushAccountList();
+    _refreshOutboxPoller();
 
       if (_selectedAccountId != null) {
         await _ensureSession(_selectedAccountId!);
@@ -393,6 +489,46 @@ class WorkspaceController extends ChangeNotifier {
     }
   }
 
+  /// Start/refresh the native Dart outbox poller against the current
+  /// settings + account list. Always called after settings change, after
+  /// account list changes, and once at app boot.
+  void _refreshOutboxPoller() {
+    if (!_appSettings.bridgeEnabled
+        || _appSettings.tenantUrl.isEmpty
+        || _appSettings.deviceApiKey.isEmpty) {
+      _outboxPoller.stop();
+      return;
+    }
+    _outboxPoller.start(
+      settings: _appSettings,
+      profileIds: _accounts.map((a) => a.id).toList(),
+      resolveSession: (profileId) => _sessions[profileId],
+      // Piggyback the account roster push on the same poll loop so the
+      // tenant /channels page reflects login changes without the user
+      // re-opening the settings dialog. Fires on first tick and every
+      // ~2 minutes after.
+      pushAccounts: () => _bridgeInjector.pushAccountList(
+        settings: _appSettings,
+        accounts: List<AccountProfile>.from(_accounts),
+      ),
+    );
+  }
+
+  /// Push the current account list to the tenant if the bridge is configured.
+  /// No-op when bridge is disabled or creds missing. Errors are logged via
+  /// the bridge injector, never thrown.
+  void _maybePushAccountList() {
+    if (!_appSettings.bridgeEnabled
+        || _appSettings.tenantUrl.isEmpty
+        || _appSettings.deviceApiKey.isEmpty) {
+      return;
+    }
+    unawaited(_bridgeInjector.pushAccountList(
+      settings: _appSettings,
+      accounts: List<AccountProfile>.from(_accounts),
+    ));
+  }
+
   AccountProfile? _accountById(String id) {
     for (final account in _accounts) {
       if (account.id == id) {
@@ -403,14 +539,28 @@ class WorkspaceController extends ChangeNotifier {
   }
 
   Future<void> _attachSessionCallback(String accountId, BrowserSession session) async {
-    session.setLoadEndCallback((_) async {
+    session.setLoadEndCallback((url) async {
       _scheduleInspection(accountId);
+      // Best-effort: inject the Campaio bridge if the user opted in and we
+      // landed on chat.zalo.me. The injector self-checks bridgeEnabled.
+      await _bridgeInjector.maybeInject(
+        session: session,
+        url: url,
+        settings: _appSettings,
+        profileId: accountId,
+      );
     });
     // Also re-inspect on URL changes — after a QR scan Zalo Web flips
     // id.zalo.me → chat.zalo.me via redirect/SPA, and we want the sidebar to
     // pick up the new name/avatar immediately without waiting for a reload.
-    session.setUrlChangedCallback((_) {
+    session.setUrlChangedCallback((url) {
       _scheduleInspection(accountId);
+      unawaited(_bridgeInjector.maybeInject(
+        session: session,
+        url: url,
+        settings: _appSettings,
+        profileId: accountId,
+      ));
     });
     session.setPopupCallback((url) {
       final account = _accountById(accountId);
@@ -643,5 +793,7 @@ class WorkspaceController extends ChangeNotifier {
     _accounts.sort((a, b) => a.createdAt.compareTo(b.createdAt));
     await _accountRepository.put(updatedAccount);
     _notifySafely();
+    _maybePushAccountList();
+    _refreshOutboxPoller();
   }
 }

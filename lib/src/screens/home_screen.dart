@@ -8,6 +8,7 @@ import '../models/account_profile.dart';
 import '../providers/app_providers.dart';
 import '../widgets/account_sidebar.dart';
 import '../widgets/empty_workspace.dart';
+import '../widgets/integration_settings_dialog.dart';
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -58,6 +59,7 @@ class HomeScreen extends ConsumerWidget {
                                 account,
                                 action,
                               ),
+                              onOpenIntegrationSettings: () => _openIntegrationSettings(context, controller),
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -178,6 +180,36 @@ class HomeScreen extends ConsumerWidget {
     );
 
     return result ?? false;
+  }
+
+  Future<void> _openIntegrationSettings(BuildContext context, WorkspaceController controller) async {
+    // Tell every embedded CEF browser to drop keyboard focus first; without
+    // this the AlertDialog's TextFields look frozen because Chromium NSViews
+    // keep eating the keystrokes via the macOS responder chain.
+    await controller.setBrowsersKeyboardFocus(false);
+    if (!context.mounted) return;
+    try {
+      await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) {
+          return IntegrationSettingsDialog(
+            initial: controller.appSettings,
+            onSave: ({required String tenantUrl, required String deviceApiKey, required bool bridgeEnabled}) async {
+              await controller.updateIntegrationSettings(
+                tenantUrl: tenantUrl,
+                deviceApiKey: deviceApiKey,
+                bridgeEnabled: bridgeEnabled,
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      // Give keyboard focus back to whichever browser the user was viewing
+      // so chat input keeps working as before.
+      await controller.setBrowsersKeyboardFocus(true);
+    }
   }
 
   Future<String?> _showRenameDialog(

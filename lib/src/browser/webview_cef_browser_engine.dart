@@ -170,6 +170,18 @@ class WebviewCefBrowserSession implements BrowserSession {
   }
 
   @override
+  Future<void> setKeyboardFocus(bool focus) async {
+    if (_disposed) return;
+    try {
+      await _controller.setClientFocus(focus);
+    } catch (_) {
+      // Best-effort: setClientFocus asserts the controller is alive; we'd
+      // rather silently noop than crash the UI when timing races with
+      // disposal happen.
+    }
+  }
+
+  @override
   Future<void> goBack() => _controller.goBack();
 
   @override

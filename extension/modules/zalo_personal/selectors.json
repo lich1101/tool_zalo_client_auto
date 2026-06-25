@@ -1,0 +1,42 @@
+{
+  "conversationItem": [
+    "[data-id^='zid-']",
+    ".conv-list__item",
+    "#conv-list .conv-list__item"
+  ],
+  "conversationName": [
+    ".conv-item-summary__name",
+    ".conv-item__name",
+    ".name"
+  ],
+  "conversationAvatar": [
+    ".conv-item-summary__avatar img",
+    ".conv-item__avatar img",
+    ".zavatar img"
+  ],
+  "messageRow": [
+    "[data-id^='msg-']",
+    ".msg-row",
+    ".chat-room__message"
+  ],
+  "messageContent": [
+    ".msg-content",
+    ".chat-message__content",
+    ".text"
+  ],
+  "outboundMessageMarker": [
+    ".chat-item--out",
+    ".msg-row--me",
+    "[data-direction='outbound']"
+  ],
+  "composeBox": [
+    "#richInput",
+    ".chat-input__textarea",
+    "[contenteditable='true'][data-id='richInput']"
+  ],
+  "sendButton": [
+    "#btnSendMsg",
+    ".btn-send",
+    "button[aria-label='Gửi']"
+  ]
+}

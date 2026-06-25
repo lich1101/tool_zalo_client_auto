@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>Campaio Bridge — Cấu hình</title>
+  <style>
+    body { font-family: -apple-system, "Inter", Segoe UI, Helvetica, Arial, sans-serif; padding: 24px; max-width: 560px; }
+    h1 { font-size: 18px; margin: 0 0 18px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-top: 14px; }
+    input { width: 100%; padding: 8px 10px; font: inherit; border: 1px solid #ccc; border-radius: 6px; margin-top: 4px; box-sizing: border-box; }
+    button { margin-top: 18px; padding: 8px 14px; font: inherit; background: #1f6feb; color: #fff; border: 0; border-radius: 6px; cursor: pointer; }
+    button:hover { background: #1858bf; }
+    .status { margin-top: 14px; font-size: 13px; }
+    .status.ok { color: #1a7f37; }
+    .status.error { color: #cf222e; }
+    .hint { font-size: 12px; color: #666; margin-top: 6px; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <h1>Campaio Bridge</h1>
+  <p class="hint">Nhập URL tenant Campaio và API key thiết bị (tạo từ giao diện web tại <strong>Tích hợp → Zalo cá nhân</strong>). Extension sẽ poll outbox mỗi 30 giây và đồng bộ contact/hội thoại mỗi 5 phút.</p>
+
+  <label for="tenantUrl">Tenant URL</label>
+  <input id="tenantUrl" type="url" placeholder="https://yourtenant.chatplus.io.vn" />
+
+  <label for="apiKey">Device API key</label>
+  <input id="apiKey" type="password" placeholder="zpd_..." />
+
+  <button id="saveBtn">Lưu</button>
+  <button id="testBtn" style="background:#fff; color:#1f6feb; border:1px solid #1f6feb; margin-left:8px;">Test kết nối</button>
+
+  <div id="status" class="status"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>

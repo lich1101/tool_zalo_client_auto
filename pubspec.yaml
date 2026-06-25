@@ -30,3 +30,4 @@ flutter:
   assets:
     - assets/zalo_selectors.json
     - assets/icons/app_logo.png
+    - assets/integration_bridge.js

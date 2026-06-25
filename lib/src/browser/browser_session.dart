@@ -39,5 +39,11 @@ abstract class BrowserSession {
 
   Future<String?> evaluateToString(String script);
 
+  /// Tell the embedded CEF browser to release/acquire keyboard focus. On
+  /// macOS, CEF NSViews capture keystrokes via the responder chain and the
+  /// AlertDialog overlay can't reclaim them on its own; calling
+  /// setKeyboardFocus(false) before showing a dialog frees the keyboard.
+  Future<void> setKeyboardFocus(bool focus);
+
   Future<void> dispose();
 }

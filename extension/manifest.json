@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Campaio Bridge",
+  "description": "Cầu nối 2 chiều giữa Campaio CRM và các nền tảng chat cá nhân (Zalo, dự kiến mở rộng Messenger/TikTok). Mỗi platform là một module dưới modules/.",
+  "version": "0.2.0",
+  "permissions": ["storage", "alarms", "scripting"],
+  "host_permissions": [
+    "https://chat.zalo.me/*",
+    "*://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Campaio Bridge",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["https://chat.zalo.me/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "modules/registry.js",
+        "modules/*/module.js",
+        "modules/*/selectors.json"
+      ],
+      "matches": ["https://chat.zalo.me/*"]
+    }
+  ]
+}
