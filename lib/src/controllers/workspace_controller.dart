@@ -17,6 +17,7 @@ import '../services/local_bridge_server.dart';
 import '../services/logging_service.dart';
 import '../services/outbox_poller.dart';
 import '../services/task_poller.dart';
+import '../services/window_activation_service.dart';
 import '../services/zalo_dom_extractor.dart';
 
 class WorkspaceController extends ChangeNotifier {
@@ -27,12 +28,12 @@ class WorkspaceController extends ChangeNotifier {
     required BrowserEngine browserEngine,
     required ZaloDomExtractor zaloDomExtractor,
     required LoggingService logger,
-  })  : _accountRepository = accountRepository,
-        _browserProfileRepository = browserProfileRepository,
-        _settingsRepository = settingsRepository,
-        _browserEngine = browserEngine,
-        _zaloDomExtractor = zaloDomExtractor,
-        _logger = logger;
+  }) : _accountRepository = accountRepository,
+       _browserProfileRepository = browserProfileRepository,
+       _settingsRepository = settingsRepository,
+       _browserEngine = browserEngine,
+       _zaloDomExtractor = zaloDomExtractor,
+       _logger = logger;
 
   final AccountRepository _accountRepository;
   final BrowserProfileRepository _browserProfileRepository;
@@ -54,6 +55,7 @@ class WorkspaceController extends ChangeNotifier {
   late final OutboxPoller _outboxPoller = OutboxPoller(_logger);
   late final TaskPoller _taskPoller = TaskPoller(_logger);
   late final LocalBridgeServer _localBridgeServer = LocalBridgeServer(_logger);
+  final WindowActivationService _windowActivation = WindowActivationService();
   String? _selectedAccountId;
   BrowserSession? _popupSession;
   String? _popupSessionKey;
@@ -65,11 +67,11 @@ class WorkspaceController extends ChangeNotifier {
   bool _isCreatingAccount = false;
   bool _disposed = false;
 
-  List<AccountProfile> get accounts => List<AccountProfile>.unmodifiable(_accounts);
+  List<AccountProfile> get accounts =>
+      List<AccountProfile>.unmodifiable(_accounts);
 
-  BrowserSession? get activeSession => _selectedAccountId == null
-      ? null
-      : _sessions[_selectedAccountId!];
+  BrowserSession? get activeSession =>
+      _selectedAccountId == null ? null : _sessions[_selectedAccountId!];
 
   bool get isCreatingAccount => _isCreatingAccount;
 
@@ -86,9 +88,8 @@ class WorkspaceController extends ChangeNotifier {
 
   String? get lastError => _lastError;
 
-  AccountProfile? get selectedAccount => _selectedAccountId == null
-      ? null
-      : _accountById(_selectedAccountId!);
+  AccountProfile? get selectedAccount =>
+      _selectedAccountId == null ? null : _accountById(_selectedAccountId!);
 
   String? get selectedAccountId => _selectedAccountId;
 
@@ -109,8 +110,8 @@ class WorkspaceController extends ChangeNotifier {
 
     try {
       final accountId = _uuid.v4();
-      final profilePath =
-          await _browserProfileRepository.createProfileDirectory(accountId);
+      final profilePath = await _browserProfileRepository
+          .createProfileDirectory(accountId);
       final now = DateTime.now();
       final profile = AccountProfile(
         id: accountId,
@@ -128,7 +129,7 @@ class WorkspaceController extends ChangeNotifier {
       await _accountRepository.put(profile);
       _notifySafely();
       _maybePushAccountList();
-    _refreshOutboxPoller();
+      _refreshOutboxPoller();
 
       await _ensureSession(accountId);
     } catch (error, stackTrace) {
@@ -246,14 +247,20 @@ class WorkspaceController extends ChangeNotifier {
     // Start the loopback bridge so the extension / Campaio web can detect the
     // app and ask it to come to front. Independent of bridge settings — health
     // detection must work even before the user configures the tenant.
-    unawaited(_localBridgeServer.start(
-      healthProvider: _buildHealthSnapshot,
-      onActivate: _activateApp,
-      diagnosticsProvider: _bridgeDiagnostics,
-      // Arbitrary JS eval is a debugging aid only — never expose it in release
-      // builds (it would let any local process drive the logged-in sessions).
-      evalHandler: kDebugMode ? _evalInSession : null,
-    ));
+    unawaited(
+      _localBridgeServer.start(
+        healthProvider: _buildHealthSnapshot,
+        onActivate: _activateApp,
+        diagnosticsProvider: kDebugMode ? _bridgeDiagnostics : null,
+        // Arbitrary JS eval is a debugging aid only — never expose it in release
+        // builds (it would let any local process drive the logged-in sessions).
+        evalHandler: kDebugMode ? _evalInSession : null,
+      ),
+    );
+
+    // Đánh thức qua URL scheme (campaio-zalo://activate) đến từ native (macOS
+    // Info.plist / Windows protocol). Cùng đổ về _activateApp như loopback bridge.
+    _windowActivation.registerNativeActivationHandler(_activateApp);
 
     try {
       final loadedAccounts = await _accountRepository.getAll();
@@ -282,15 +289,17 @@ class WorkspaceController extends ChangeNotifier {
       // this, a customer messaging account B while the user is looking at
       // account A would be invisible to the tenant. CEF can handle many
       // sessions; the user can stop the app to free resources.
-      if (_appSettings.bridgeEnabled
-          && _appSettings.tenantUrl.isNotEmpty
-          && _appSettings.deviceApiKey.isNotEmpty) {
+      if (_appSettings.bridgeEnabled &&
+          _appSettings.tenantUrl.isNotEmpty &&
+          _appSettings.deviceApiKey.isNotEmpty) {
         for (final account in _accounts) {
           if (_sessions.containsKey(account.id)) continue;
-          unawaited(_ensureSession(
-            account.id,
-            backgroundWarmup: account.id != _selectedAccountId,
-          ));
+          unawaited(
+            _ensureSession(
+              account.id,
+              backgroundWarmup: account.id != _selectedAccountId,
+            ),
+          );
         }
       }
 
@@ -311,7 +320,8 @@ class WorkspaceController extends ChangeNotifier {
     }
   }
 
-  bool isSessionBooting(String accountId) => _bootingSessions.contains(accountId);
+  bool isSessionBooting(String accountId) =>
+      _bootingSessions.contains(accountId);
 
   bool isSessionChecking(String accountId) =>
       _inspectingSessions.contains(accountId) ||
@@ -397,14 +407,12 @@ class WorkspaceController extends ChangeNotifier {
     _selectedAccountId = accountId;
     _notifySafely();
     final account = _accountById(accountId);
-    final shouldReopen = _backgroundWarmSessions.remove(accountId)
-        || account?.status == AccountStatus.error;
+    final shouldReopen =
+        _backgroundWarmSessions.remove(accountId) ||
+        account?.status == AccountStatus.error;
     await _ensureSession(accountId, reopen: shouldReopen);
     if (shouldReopen) {
-      _scheduleInspection(
-        accountId,
-        delay: const Duration(seconds: 1),
-      );
+      _scheduleInspection(accountId, delay: const Duration(seconds: 1));
     }
   }
 
@@ -473,10 +481,12 @@ class WorkspaceController extends ChangeNotifier {
     if (_appSettings.bridgeEnabled) {
       for (final account in _accounts) {
         if (_sessions.containsKey(account.id)) continue;
-        unawaited(_ensureSession(
-          account.id,
-          backgroundWarmup: account.id != _selectedAccountId,
-        ));
+        unawaited(
+          _ensureSession(
+            account.id,
+            backgroundWarmup: account.id != _selectedAccountId,
+          ),
+        );
       }
     }
   }
@@ -510,7 +520,7 @@ class WorkspaceController extends ChangeNotifier {
       }
       _notifySafely();
       _maybePushAccountList();
-    _refreshOutboxPoller();
+      _refreshOutboxPoller();
 
       if (_selectedAccountId != null) {
         await _ensureSession(_selectedAccountId!);
@@ -528,9 +538,9 @@ class WorkspaceController extends ChangeNotifier {
   /// settings + account list. Always called after settings change, after
   /// account list changes, and once at app boot.
   void _refreshOutboxPoller() {
-    if (!_appSettings.bridgeEnabled
-        || _appSettings.tenantUrl.isEmpty
-        || _appSettings.deviceApiKey.isEmpty) {
+    if (!_appSettings.bridgeEnabled ||
+        _appSettings.tenantUrl.isEmpty ||
+        _appSettings.deviceApiKey.isEmpty) {
       _outboxPoller.stop();
       _taskPoller.stop();
       return;
@@ -540,14 +550,16 @@ class WorkspaceController extends ChangeNotifier {
       settings: _appSettings,
       profileIds: profileIds,
       resolveSession: (profileId) => _sessions[profileId],
+      prepareSession: _prepareTaskSession,
       // Piggyback the account roster push on the same poll loop so the
       // tenant /channels page reflects login changes without the user
       // re-opening the settings dialog. Fires on first tick and every
       // ~2 minutes after.
-      pushAccounts: () => _bridgeInjector.pushAccountList(
-        settings: _appSettings,
-        accounts: List<AccountProfile>.from(_accounts),
-      ),
+      pushAccounts:
+          () => _bridgeInjector.pushAccountList(
+            settings: _appSettings,
+            accounts: List<AccountProfile>.from(_accounts),
+          ),
     );
     // Phone-driven lookup/history/send queue runs on the same lifecycle.
     _taskPoller.start(
@@ -563,14 +575,19 @@ class WorkspaceController extends ChangeNotifier {
   Map<String, Object?> _buildHealthSnapshot() {
     return <String, Object?>{
       'bridgeEnabled': _appSettings.bridgeEnabled,
-      'tenantConfigured': _appSettings.tenantUrl.isNotEmpty && _appSettings.deviceApiKey.isNotEmpty,
-      'accounts': _accounts
-          .map((a) => <String, Object?>{
-                'profileId': a.id,
-                'displayName': a.displayName ?? a.accountName,
-                'status': a.status.name,
-              })
-          .toList(),
+      'tenantConfigured':
+          _appSettings.tenantUrl.isNotEmpty &&
+          _appSettings.deviceApiKey.isNotEmpty,
+      'accounts':
+          _accounts
+              .map(
+                (a) => <String, Object?>{
+                  'profileId': a.id,
+                  'displayName': a.displayName ?? a.accountName,
+                  'status': a.status.name,
+                },
+              )
+              .toList(),
     };
   }
 
@@ -594,7 +611,8 @@ JSON.stringify({
     final out = <Map<String, Object?>>[];
     out.add(<String, Object?>{
       'selectedAccountId': _selectedAccountId,
-      'selectedName': selectedAccount?.displayName ?? selectedAccount?.accountName,
+      'selectedName':
+          selectedAccount?.displayName ?? selectedAccount?.accountName,
       'selectedStatus': selectedAccount?.status.name,
     });
     for (final entry in _sessions.entries) {
@@ -616,12 +634,15 @@ JSON.stringify({
     return out;
   }
 
-  /// Best-effort focus when the web/extension presses "Mở app". Without a
-  /// window-management plugin we can't reliably raise the window from pure
-  /// Dart, so this currently just selects an account + logs; the OS custom URL
-  /// scheme (campaio-zalo://) is the primary wake/foreground path.
+  /// Đánh thức app khi web/extension bấm "Mở app" (qua loopback /activate hoặc
+  /// URL scheme campaio-zalo://activate). Dùng `window_manager` để raise + focus
+  /// cửa sổ — chạy được trên CẢ macOS lẫn Windows (trước đây Dart thuần không
+  /// raise được nên chỉ dựa vào OS, và Windows hoàn toàn không có).
   Future<void> _activateApp() async {
-    _logger.info('[WorkspaceController] activate requested via local bridge.');
+    _logger.info(
+      '[WorkspaceController] activate requested (bring window to front).',
+    );
+    await _windowActivation.bringToFront();
     if (_selectedAccountId == null && _accounts.isNotEmpty) {
       await selectAccount(_accounts.first.id);
     }
@@ -644,7 +665,9 @@ JSON.stringify({
     }
 
     if (_selectedAccountId != normalizedProfileId) {
-      _logger.info('[WorkspaceController] task selecting profile $normalizedProfileId from ${_selectedAccountId ?? '<none>'}.');
+      _logger.info(
+        '[WorkspaceController] task selecting profile $normalizedProfileId from ${_selectedAccountId ?? '<none>'}.',
+      );
       await selectAccount(normalizedProfileId);
       await Future<void>.delayed(const Duration(milliseconds: 500));
     }
@@ -665,7 +688,10 @@ JSON.stringify({
 
     await _bridgeInjector.maybeInject(
       session: session,
-      url: session.currentUrl.isEmpty ? AppConfig.zaloAccountUrl : session.currentUrl,
+      url:
+          session.currentUrl.isEmpty
+              ? AppConfig.zaloAccountUrl
+              : session.currentUrl,
       settings: _appSettings,
       profileId: normalizedProfileId,
     );
@@ -726,15 +752,17 @@ JSON.stringify({
   /// No-op when bridge is disabled or creds missing. Errors are logged via
   /// the bridge injector, never thrown.
   void _maybePushAccountList() {
-    if (!_appSettings.bridgeEnabled
-        || _appSettings.tenantUrl.isEmpty
-        || _appSettings.deviceApiKey.isEmpty) {
+    if (!_appSettings.bridgeEnabled ||
+        _appSettings.tenantUrl.isEmpty ||
+        _appSettings.deviceApiKey.isEmpty) {
       return;
     }
-    unawaited(_bridgeInjector.pushAccountList(
-      settings: _appSettings,
-      accounts: List<AccountProfile>.from(_accounts),
-    ));
+    unawaited(
+      _bridgeInjector.pushAccountList(
+        settings: _appSettings,
+        accounts: List<AccountProfile>.from(_accounts),
+      ),
+    );
   }
 
   AccountProfile? _accountById(String id) {
@@ -746,7 +774,10 @@ JSON.stringify({
     return null;
   }
 
-  Future<void> _attachSessionCallback(String accountId, BrowserSession session) async {
+  Future<void> _attachSessionCallback(
+    String accountId,
+    BrowserSession session,
+  ) async {
     session.setLoadEndCallback((url) async {
       _scheduleInspection(accountId);
       // Best-effort: inject the Campaio bridge if the user opted in and we
@@ -763,12 +794,14 @@ JSON.stringify({
     // pick up the new name/avatar immediately without waiting for a reload.
     session.setUrlChangedCallback((url) {
       _scheduleInspection(accountId);
-      unawaited(_bridgeInjector.maybeInject(
-        session: session,
-        url: url,
-        settings: _appSettings,
-        profileId: accountId,
-      ));
+      unawaited(
+        _bridgeInjector.maybeInject(
+          session: session,
+          url: url,
+          settings: _appSettings,
+          profileId: accountId,
+        ),
+      );
     });
     session.setPopupCallback((url) {
       final account = _accountById(accountId);
@@ -936,10 +969,7 @@ JSON.stringify({
       // case doesn't loop forever).
       if (result.status == AccountStatus.active &&
           (result.displayName == null || result.avatarUrl == null)) {
-        _scheduleInspection(
-          accountId,
-          delay: const Duration(seconds: 2),
-        );
+        _scheduleInspection(accountId, delay: const Duration(seconds: 2));
       }
     } catch (error, stackTrace) {
       _reportError(
@@ -975,20 +1005,13 @@ JSON.stringify({
     }
   }
 
-  void _reportError(
-    String message, {
-    Object? error,
-    StackTrace? stackTrace,
-  }) {
+  void _reportError(String message, {Object? error, StackTrace? stackTrace}) {
     _lastError = message;
     _logger.error(message, error: error, stackTrace: stackTrace);
     _notifySafely();
   }
 
-  void _scheduleInspection(
-    String accountId, {
-    Duration? delay,
-  }) {
+  void _scheduleInspection(String accountId, {Duration? delay}) {
     _scheduledInspections.remove(accountId)?.cancel();
     _scheduledInspections[accountId] = Timer(
       delay ?? AppConfig.sessionCheckDebounce,

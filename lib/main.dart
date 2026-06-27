@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'src/app.dart';
 import 'src/providers/app_providers.dart';
@@ -15,6 +16,9 @@ Future<void> main() async {
   // quietly take the whole app down.
   await runZonedGuarded<Future<void>>(() async {
     WidgetsFlutterBinding.ensureInitialized();
+
+    // window_manager phải init trước khi raise/focus cửa sổ từ Dart (macOS+Windows).
+    await windowManager.ensureInitialized();
 
     FlutterError.onError = (details) {
       FlutterError.presentError(details);

@@ -27,6 +27,12 @@ bool FlutterWindow::OnCreate() {
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
+  // Kênh đánh thức: native (WM_COPYDATA từ instance thứ 2) → Dart bring-to-front.
+  activation_channel_ = std::make_unique<flutter::MethodChannel<>>(
+      flutter_controller_->engine()->messenger(),
+      "site.campaio.zalo/activation",
+      &flutter::StandardMethodCodec::GetInstance());
+
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
   });
@@ -65,6 +71,18 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
       break;
+    case WM_COPYDATA: {
+      // Instance thứ 2 (mở qua protocol campaio-zalo://) gửi tín hiệu đánh thức.
+      // Khôi phục nếu đang minimize, đưa cửa sổ lên trước, rồi báo Dart focus.
+      if (::IsIconic(hwnd)) {
+        ::ShowWindow(hwnd, SW_RESTORE);
+      }
+      ::SetForegroundWindow(hwnd);
+      if (activation_channel_) {
+        activation_channel_->InvokeMethod("onActivate", nullptr);
+      }
+      return TRUE;
+    }
   }
 
   return Win32Window::MessageHandler(hwnd, message, wparam, lparam);

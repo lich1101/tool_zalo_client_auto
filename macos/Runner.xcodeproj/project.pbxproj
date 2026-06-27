@@ -242,7 +242,7 @@
 				3399D490228B24CF009A79C7 /* ShellScript */,
 				C5675893EEA973ECDADBBCBA /* [CP] Embed Pods Frameworks */,
 				D1E2F3A4B5C6D7E8F9012345 /* Strip Extended Attributes */,
-				47C88C7408A1CEA8E5D2DF41 /* Embed CEF Helpers */,
+				E0BBD1772EE6F3B5BA969CB3 /* Embed CEF Helpers */,
 			);
 			buildRules = (
 			);
@@ -363,25 +363,6 @@
 			shellPath = /bin/sh;
 			shellScript = "\"$FLUTTER_ROOT\"/packages/flutter_tools/bin/macos_assemble.sh && touch Flutter/ephemeral/tripwire";
 		};
-		47C88C7408A1CEA8E5D2DF41 /* Embed CEF Helpers */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Embed CEF Helpers";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/bash;
-			shellScript = "bash \"${SRCROOT}/Flutter/ephemeral/.symlinks/plugins/webview_cef/macos/scripts/embed_cef_helpers.sh\"";
-		};
 		BF1156E98F467B9610D876A7 /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -462,6 +443,25 @@
 			shellPath = /bin/sh;
 			shellScript = "xattr -cr \"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\" || true\n";
 			showEnvVarsInLog = 0;
+		};
+		E0BBD1772EE6F3B5BA969CB3 /* Embed CEF Helpers */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed CEF Helpers";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "bash \"${SRCROOT}/Flutter/ephemeral/.symlinks/plugins/webview_cef/macos/scripts/embed_cef_helpers.sh\"";
 		};
 /* End PBXShellScriptBuildPhase section */
 

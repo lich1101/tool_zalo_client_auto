@@ -6,7 +6,10 @@
   "permissions": ["storage", "alarms", "scripting"],
   "host_permissions": [
     "https://chat.zalo.me/*",
-    "*://*/*"
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://*.chatplus.io.vn/*",
+    "https://*.campaio.site/*"
   ],
   "background": {
     "service_worker": "background.js",

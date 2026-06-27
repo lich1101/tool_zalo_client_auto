@@ -19,6 +19,7 @@ dependencies:
   uuid: ^4.5.3
   webview_cef:
     path: packages/webview_cef
+  window_manager: ^0.5.1
 
 dev_dependencies:
   flutter_lints: ^5.0.0

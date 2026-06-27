@@ -32,6 +32,8 @@ import 'logging_service.dart';
 ///   - At most one tick in flight (re-entrant guard).
 ///   - Stops cleanly on dispose.
 typedef ProfileSessionResolver = BrowserSession? Function(String profileId);
+typedef ProfileSessionPreparer =
+    Future<BrowserSession?> Function(String profileId);
 typedef AccountListPusher = Future<void> Function();
 
 class OutboxPoller {
@@ -44,6 +46,7 @@ class OutboxPoller {
   AppSettings _settings = const AppSettings();
   List<String> _profileIds = const [];
   ProfileSessionResolver? _resolveSession;
+  ProfileSessionPreparer? _prepareSession;
   AccountListPusher? _pushAccounts;
   int _consecutiveFailures = 0;
   // Initialised to the threshold so the very first tick triggers a push.
@@ -65,11 +68,13 @@ class OutboxPoller {
     required AppSettings settings,
     required List<String> profileIds,
     required ProfileSessionResolver resolveSession,
+    ProfileSessionPreparer? prepareSession,
     AccountListPusher? pushAccounts,
   }) {
     _settings = settings;
     _profileIds = List.unmodifiable(profileIds);
     _resolveSession = resolveSession;
+    _prepareSession = prepareSession;
     _pushAccounts = pushAccounts;
 
     if (!_eligible()) {
@@ -85,7 +90,9 @@ class OutboxPoller {
     _logger.info('[OutboxPoller] started (profiles=${_profileIds.length}).');
     _scheduleTick(_baseInterval);
     // Fire a first tick almost immediately so settings-save feedback is fast.
-    Timer(const Duration(seconds: 3), () { unawaited(_tick()); });
+    Timer(const Duration(seconds: 3), () {
+      unawaited(_tick());
+    });
   }
 
   void stop() {
@@ -98,9 +105,9 @@ class OutboxPoller {
   }
 
   bool _eligible() {
-    return _settings.bridgeEnabled
-        && _settings.tenantUrl.isNotEmpty
-        && _settings.deviceApiKey.isNotEmpty;
+    return _settings.bridgeEnabled &&
+        _settings.tenantUrl.isNotEmpty &&
+        _settings.deviceApiKey.isNotEmpty;
   }
 
   void _scheduleTick(Duration delay) {
@@ -121,7 +128,8 @@ class OutboxPoller {
       // settings dialog. Run it FIRST so an outbox failure later in the
       // tick doesn't block the push.
       _ticksSinceAccountPush += 1;
-      if (_pushAccounts != null && _ticksSinceAccountPush >= _accountPushTickInterval) {
+      if (_pushAccounts != null &&
+          _ticksSinceAccountPush >= _accountPushTickInterval) {
         try {
           await _pushAccounts!();
           _ticksSinceAccountPush = 0;
@@ -149,7 +157,9 @@ class OutboxPoller {
       _consecutiveFailures += 1;
       _logger.warning('[OutboxPoller] tick failed: $error');
       if (_consecutiveFailures >= 3) {
-        _logger.warning('[OutboxPoller] backing off to ${_backoffInterval.inMinutes} minutes after $_consecutiveFailures consecutive failures.');
+        _logger.warning(
+          '[OutboxPoller] backing off to ${_backoffInterval.inMinutes} minutes after $_consecutiveFailures consecutive failures.',
+        );
         _scheduleTick(_backoffInterval);
       }
     } finally {
@@ -159,10 +169,13 @@ class OutboxPoller {
 
   Future<void> _pollOnce(String? profileId) async {
     final base = _settings.tenantUrl.replaceAll(RegExp(r'/+$'), '');
-    final qs = profileId != null && profileId.isNotEmpty
-        ? '?limit=5&profileId=${Uri.encodeQueryComponent(profileId)}'
-        : '?limit=5';
-    final List<dynamic> items = await _httpGet('$base/api/integrations/zalo-personal/outbox$qs');
+    final qs =
+        profileId != null && profileId.isNotEmpty
+            ? '?limit=5&profileId=${Uri.encodeQueryComponent(profileId)}'
+            : '?limit=5';
+    final List<dynamic> items = await _httpGet(
+      '$base/api/integrations/zalo-personal/outbox$qs',
+    );
     if (items.isEmpty) return;
 
     for (final raw in items) {
@@ -178,9 +191,13 @@ class OutboxPoller {
       String? errorMessage;
 
       try {
-        final session = _resolveSession?.call(itemProfileId ?? profileId ?? '');
+        final effectiveProfileId = itemProfileId ?? profileId ?? '';
+        var session = await _prepareSession?.call(effectiveProfileId);
+        session ??= _resolveSession?.call(effectiveProfileId);
         if (session == null) {
-          throw StateError('Không có session cho profile ${itemProfileId ?? profileId ?? '<none>'}.');
+          throw StateError(
+            'Không có session cho profile ${effectiveProfileId.isEmpty ? '<none>' : effectiveProfileId}.',
+          );
         }
         await _sendViaSession(session, recipientZaloId, content);
         resultStatus = 'sent';
@@ -211,7 +228,11 @@ class OutboxPoller {
     }
   }
 
-  Future<void> _sendViaSession(BrowserSession session, String recipientZaloId, String content) async {
+  Future<void> _sendViaSession(
+    BrowserSession session,
+    String recipientZaloId,
+    String content,
+  ) async {
     // Reuse the bridge's helper APIs already exposed on window.__CAMPAIO_BRIDGE__
     // when the injected script has bootstrapped. If not bootstrapped yet,
     // bootstrap it inline via the same prologue + script content.
@@ -271,12 +292,12 @@ class OutboxPoller {
 
   bool _isTransientSendError(Object error) {
     final text = error.toString().toLowerCase();
-    return text.contains('không có session')
-        || text.contains('bridge not bootstrapped')
-        || text.contains('compose box missing')
-        || text.contains('compose box not ready')
-        || text.contains('browser')
-        || text.contains('webview');
+    return text.contains('không có session') ||
+        text.contains('bridge not bootstrapped') ||
+        text.contains('compose box missing') ||
+        text.contains('compose box not ready') ||
+        text.contains('browser') ||
+        text.contains('webview');
   }
 
   Future<List<dynamic>> _httpGet(String url) async {
@@ -294,13 +315,19 @@ class OutboxPoller {
         }
         return const [];
       }
-      throw HttpException('HTTP ${res.statusCode}: ${body.length > 200 ? body.substring(0, 200) : body}', uri: Uri.parse(url));
+      throw HttpException(
+        'HTTP ${res.statusCode}: ${body.length > 200 ? body.substring(0, 200) : body}',
+        uri: Uri.parse(url),
+      );
     } finally {
       client.close(force: false);
     }
   }
 
-  Future<Map<String, dynamic>> _httpPostJson(String url, {required Map<String, dynamic> body}) async {
+  Future<Map<String, dynamic>> _httpPostJson(
+    String url, {
+    required Map<String, dynamic> body,
+  }) async {
     final client = HttpClient();
     try {
       final req = await client.postUrl(Uri.parse(url));
@@ -317,7 +344,10 @@ class OutboxPoller {
         final decoded = jsonDecode(responseBody);
         return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
       }
-      throw HttpException('HTTP ${res.statusCode}: ${responseBody.length > 200 ? responseBody.substring(0, 200) : responseBody}', uri: Uri.parse(url));
+      throw HttpException(
+        'HTTP ${res.statusCode}: ${responseBody.length > 200 ? responseBody.substring(0, 200) : responseBody}',
+        uri: Uri.parse(url),
+      );
     } finally {
       client.close(force: false);
     }

@@ -533,8 +533,7 @@ async function injectMessage(content) {
   if (!box) throw new Error("compose box missing");
   box.focus();
   if (box.tagName === "TEXTAREA" || box.tagName === "INPUT") {
-    box.value = content;
-    box.dispatchEvent(new Event("input", { bubbles: true }));
+    setNativeValue(box, content);
   } else {
     box.textContent = content;
     box.dispatchEvent(new InputEvent("input", { bubbles: true, data: content, inputType: "insertText" }));
